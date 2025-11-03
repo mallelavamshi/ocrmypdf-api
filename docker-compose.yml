@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  ocrmypdf-api:
+    build: .
+    container_name: ocrmypdf-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/code/app
+      - ocr_temp:/tmp/ocr_files
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  ocr_temp:
