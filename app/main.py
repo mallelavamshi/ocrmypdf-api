@@ -27,6 +27,7 @@ async def health_check():
 async def process_pdf(
     file: UploadFile = File(...),
     language: str = Query(default="eng", description="OCR language"),
+    redo_ocr: bool = Query(default=False, description="Re-OCR pages with existing text")
 ):
     """
     Process a scanned PDF and return a searchable PDF using simple OCR
@@ -43,16 +44,23 @@ async def process_pdf(
             content = await file.read()
             buffer.write(content)
         
-        # Simple OCR without aggressive preprocessing
-        ocrmypdf.ocr(
-            input_path,
-            output_path,
-            language=language,
-            output_type="pdf",  # Skip PDF/A
-            optimize=0,
-            skip_big=15,  # Skip pages > 15 megapixels
-            tesseract_timeout=180
-        )
+        # Build OCR parameters
+        ocr_params = {
+            "input_file": input_path,
+            "output_file": output_path,
+            "language": language,
+            "output_type": "pdf",  # Skip PDF/A
+            "optimize": 0,
+            "skip_big": 15,
+            "tesseract_timeout": 180
+        }
+        
+        # Add redo-ocr if requested
+        if redo_ocr:
+            ocr_params["redo_ocr"] = True
+        
+        # Process with OCRmyPDF
+        ocrmypdf.ocr(**ocr_params)
         
         return FileResponse(
             path=str(output_path),
@@ -69,6 +77,7 @@ async def process_pdf(
                 input_path.unlink()
             except:
                 pass
+
 
 @app.post("/extract-text")
 async def extract_text(
