@@ -4,7 +4,7 @@ pipeline {
     environment {
         DOCKER_IMAGE = 'ocrmypdf-api'
         CONTAINER_NAME = 'ocrmypdf-api'
-        APP_PORT = '8000'
+        APP_PORT = '8001'
     }
     
     stages {
@@ -36,7 +36,7 @@ pipeline {
                 sh '''
                     docker run -d \
                         --name ${CONTAINER_NAME} \
-                        -p ${APP_PORT}:8000 \
+                        -p ${APP_PORT}:8001 \
                         --restart unless-stopped \
                         ${DOCKER_IMAGE}:latest
                 '''
