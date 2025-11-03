@@ -5,7 +5,7 @@ services:
     build: .
     container_name: ocrmypdf-api
     ports:
-      - "8001:8000" #change
+      - "8001:8001" #change
     volumes:
       - ./app:/code/app
       - ocr_temp:/tmp/ocr_files

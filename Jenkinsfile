@@ -10,7 +10,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/YOUR_USERNAME/ocrmypdf-api.git'
+                git branch: 'main', url: 'https://github.com/mallelavamshi/ocrmypdf-api.git'
             }
         }
         
