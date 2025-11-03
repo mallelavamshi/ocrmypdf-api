@@ -1,11 +1,11 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import ocrmypdf
 import os
-import tempfile
 import uuid
 from pathlib import Path
-import PyPDF2
+import pdfplumber
+import pikepdf
 
 app = FastAPI(title="OCRmyPDF API", version="1.0.0")
 
@@ -33,7 +33,6 @@ async def process_pdf(
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
-    # Generate unique filenames
     file_id = str(uuid.uuid4())
     input_path = TEMP_DIR / f"{file_id}_input.pdf"
     output_path = TEMP_DIR / f"{file_id}_output.pdf"
@@ -56,24 +55,29 @@ async def process_pdf(
         
         # Return the processed file
         return FileResponse(
-            path=output_path,
+            path=str(output_path),
             media_type="application/pdf",
-            filename=f"searchable_{file.filename}",
-            background=None
+            filename=f"searchable_{file.filename}"
         )
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
     
     finally:
-        # Cleanup input file immediately
+        # Cleanup input file
         if input_path.exists():
-            input_path.unlink()
+            try:
+                input_path.unlink()
+            except:
+                pass
 
 @app.post("/extract-text")
-async def extract_text(file: UploadFile = File(...), language: str = "eng"):
+async def extract_text(
+    file: UploadFile = File(...), 
+    language: str = "eng"
+):
     """
-    Extract text from a scanned PDF
+    Extract text from a scanned PDF using pdfplumber
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
@@ -88,72 +92,86 @@ async def extract_text(file: UploadFile = File(...), language: str = "eng"):
             content = await file.read()
             buffer.write(content)
         
-        # Process with OCRmyPDF to add text layer
+        # First, OCR the PDF to ensure it has text
         ocrmypdf.ocr(
             input_path, 
             output_path, 
             language=language,
-            force_ocr=True,
+            force_ocr=False,  # Don't re-OCR if already has text
             skip_text=False
         )
         
-        # Extract text using PyPDF2
+        # Extract text using pdfplumber
         text = ""
         page_count = 0
         
-        with open(output_path, 'rb') as pdf_file:
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            page_count = len(pdf_reader.pages)
+        with pdfplumber.open(output_path) as pdf:
+            page_count = len(pdf.pages)
             
-            for page_num, page in enumerate(pdf_reader.pages):
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page_text
-                except Exception as e:
-                    text += f"\n--- Page {page_num + 1} (Error extracting) ---\n"
+            for page_num, page in enumerate(pdf.pages, start=1):
+                page_text = page.extract_text()
+                if page_text:
+                    text += f"\n{'='*50}\n"
+                    text += f"PAGE {page_num}\n"
+                    text += f"{'='*50}\n"
+                    text += page_text + "\n"
         
         return {
+            "success": True,
             "text": text.strip(),
             "pages": page_count,
-            "characters": len(text.strip())
+            "characters": len(text.strip()),
+            "filename": file.filename
         }
     
     except ocrmypdf.exceptions.PriorOcrFoundError:
-        # PDF already has OCR, just extract text
+        # PDF already has text, extract directly
         try:
             text = ""
-            with open(input_path, 'rb') as pdf_file:
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                page_count = len(pdf_reader.pages)
+            with pdfplumber.open(input_path) as pdf:
+                page_count = len(pdf.pages)
                 
-                for page_num, page in enumerate(pdf_reader.pages):
+                for page_num, page in enumerate(pdf.pages, start=1):
                     page_text = page.extract_text()
                     if page_text:
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page_text
+                        text += f"\n{'='*50}\n"
+                        text += f"PAGE {page_num}\n"
+                        text += f"{'='*50}\n"
+                        text += page_text + "\n"
             
             return {
+                "success": True,
                 "text": text.strip(),
                 "pages": page_count,
                 "characters": len(text.strip()),
+                "filename": file.filename,
                 "note": "PDF already contained searchable text"
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
     
     finally:
         # Cleanup temporary files
-        if input_path.exists():
-            input_path.unlink()
-        if output_path.exists():
-            output_path.unlink()
+        for temp_file in [input_path, output_path]:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except:
+                    pass
 
-# Add cleanup endpoint
+@app.get("/info")
+async def get_pdf_info(pdf_url: str = None):
+    """
+    Get PDF metadata and page count
+    """
+    if not pdf_url:
+        raise HTTPException(status_code=400, detail="pdf_url parameter is required")
+    
+    return {"message": "Feature coming soon", "status": "not_implemented"}
+
 @app.delete("/cleanup")
 async def cleanup_temp_files():
     """
@@ -167,6 +185,6 @@ async def cleanup_temp_files():
             if current_time - file_path.stat().st_mtime > 3600:  # 1 hour
                 file_path.unlink()
                 count += 1
-        return {"message": f"Cleaned up {count} temporary files"}
+        return {"message": f"Cleaned up {count} temporary files", "success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")

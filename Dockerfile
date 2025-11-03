@@ -16,7 +16,6 @@ WORKDIR /code
 # Copy requirements and install Python dependencies
 COPY requirements.txt /code/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
-RUN pip install PyPDF2
 
 # Copy application code
 COPY ./app /code/app
@@ -25,4 +24,4 @@ COPY ./app /code/app
 EXPOSE 8001
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
