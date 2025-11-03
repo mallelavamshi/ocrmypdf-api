@@ -4,8 +4,11 @@ import ocrmypdf
 import os
 import uuid
 from pathlib import Path
-import pdfplumber
-import pikepdf
+import subprocess
+import tempfile
+from pdf2image import convert_from_path
+import pytesseract
+from PIL import Image
 
 app = FastAPI(title="OCRmyPDF API", version="1.0.0")
 
@@ -23,16 +26,10 @@ async def health_check():
 @app.post("/ocr")
 async def process_pdf(
     file: UploadFile = File(...),
-    language: str = Query(default="eng", description="OCR language (eng, spa, fra, etc)"),
-    deskew: bool = Query(default=True, description="Fix page skew"),
-    clean: bool = Query(default=True, description="Clean/denoise image before OCR"),
-    remove_background: bool = Query(default=False, description="Remove background (use cautiously)"),
-    image_dpi: int = Query(default=300, description="DPI for images without DPI info (recommend 300)"),
-    oversample: int = Query(default=0, description="Resample low-DPI images to this DPI (0=disabled, 300=recommended for poor scans)")
+    language: str = Query(default="eng", description="OCR language"),
 ):
     """
-    Process a scanned PDF and return a searchable PDF.
-    Optimized for poor quality scans with preprocessing options.
+    Process a scanned PDF and return a searchable PDF using simple OCR
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
@@ -46,30 +43,16 @@ async def process_pdf(
             content = await file.read()
             buffer.write(content)
         
-        # Build OCRmyPDF arguments for better quality and performance
-        ocr_params = {
-            "input_file": input_path,
-            "output_file": output_path,
-            "language": language,
-            "deskew": deskew,
-            "clean": clean,  # Denoise images
-            "remove_background": remove_background,
-            "image_dpi": image_dpi,  # Set DPI for images without metadata
-            "rotate_pages": True,  # Auto-detect rotation
-            "rotate_pages_threshold": 14.0,
-            "force_ocr": True,
-            # Performance optimizations
-            "output_type": "pdf",  # Skip PDF/A conversion for speed
-            "optimize": 0,  # Disable optimization for speed
-            "fast_web_view": 999999,  # Disable fast web view
-        }
-        
-        # Add oversampling if specified (for low-quality scans)
-        if oversample > 0:
-            ocr_params["oversample"] = oversample
-        
-        # Process with OCRmyPDF
-        ocrmypdf.ocr(**ocr_params)
+        # Simple OCR without aggressive preprocessing
+        ocrmypdf.ocr(
+            input_path,
+            output_path,
+            language=language,
+            output_type="pdf",  # Skip PDF/A
+            optimize=0,
+            skip_big=15,  # Skip pages > 15 megapixels
+            tesseract_timeout=180
+        )
         
         return FileResponse(
             path=str(output_path),
@@ -91,163 +74,122 @@ async def process_pdf(
 async def extract_text(
     file: UploadFile = File(...), 
     language: str = Query(default="eng", description="OCR language"),
-    clean: bool = Query(default=True, description="Clean/denoise before OCR"),
-    image_dpi: int = Query(default=300, description="DPI for images without metadata"),
-    oversample: int = Query(default=300, description="Resample low-DPI to this value (300 recommended)")
+    psm: int = Query(default=3, description="Tesseract PSM mode (3=auto, 6=single block, 11=sparse text)")
 ):
     """
-    Extract text from a scanned PDF with preprocessing for poor quality scans.
+    Extract text using Tesseract directly with PSM control.
+    PSM modes:
+    - 3: Fully automatic (default)
+    - 6: Assume a single uniform block of text
+    - 11: Sparse text. Find as much text as possible
+    - 12: Sparse text with OSD (orientation detection)
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
     file_id = str(uuid.uuid4())
     input_path = TEMP_DIR / f"{file_id}_input.pdf"
-    output_path = TEMP_DIR / f"{file_id}_output.pdf"
     
     try:
         with open(input_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
         
-        # Build OCR parameters optimized for quality
-        ocr_params = {
-            "input_file": input_path,
-            "output_file": output_path,
-            "language": language,
-            "deskew": True,  # Always fix skew for text extraction
-            "clean": clean,  # Denoise images
-            "image_dpi": image_dpi,  # Handle images without DPI metadata
-            "rotate_pages": True,  # Auto-detect rotation
-            "rotate_pages_threshold": 14.0,
-            "force_ocr": False,  # Don't re-OCR if already has text
-            "skip_text": False,
-            # Performance optimizations
-            "output_type": "pdf",  # Skip PDF/A for speed
-            "optimize": 0,  # No optimization
-            "fast_web_view": 999999,
-        }
+        # Convert PDF to images
+        images = convert_from_path(input_path, dpi=300)
         
-        # Add oversampling for better OCR on poor scans
-        if oversample > 0:
-            ocr_params["oversample"] = oversample
+        # Extract text from each page using Tesseract with specified PSM
+        all_text = ""
+        page_count = len(images)
         
-        # Process with OCRmyPDF
-        ocrmypdf.ocr(**ocr_params)
-        
-        # Extract text using pdfplumber
-        text = ""
-        page_count = 0
-        
-        with pdfplumber.open(output_path) as pdf:
-            page_count = len(pdf.pages)
+        for page_num, image in enumerate(images, start=1):
+            # Configure Tesseract with PSM mode
+            custom_config = f'--psm {psm} --oem 3'
             
-            for page_num, page in enumerate(pdf.pages, start=1):
-                page_text = page.extract_text()
-                if page_text:
-                    text += f"\n{'='*50}\n"
-                    text += f"PAGE {page_num}\n"
-                    text += f"{'='*50}\n"
-                    text += page_text + "\n"
+            # Extract text
+            page_text = pytesseract.image_to_string(
+                image,
+                lang=language,
+                config=custom_config
+            )
+            
+            if page_text.strip():
+                all_text += f"\n{'='*50}\n"
+                all_text += f"PAGE {page_num}\n"
+                all_text += f"{'='*50}\n"
+                all_text += page_text + "\n"
         
         return {
             "success": True,
-            "text": text.strip(),
+            "text": all_text.strip(),
             "pages": page_count,
-            "characters": len(text.strip()),
+            "characters": len(all_text.strip()),
             "filename": file.filename,
             "settings_used": {
-                "clean": clean,
-                "image_dpi": image_dpi,
-                "oversample": oversample
+                "language": language,
+                "psm_mode": psm,
+                "dpi": 300
             }
         }
     
-    except ocrmypdf.exceptions.PriorOcrFoundError:
-        # PDF already has text
-        try:
-            text = ""
-            with pdfplumber.open(input_path) as pdf:
-                page_count = len(pdf.pages)
-                
-                for page_num, page in enumerate(pdf.pages, start=1):
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"\n{'='*50}\n"
-                        text += f"PAGE {page_num}\n"
-                        text += f"{'='*50}\n"
-                        text += page_text + "\n"
-            
-            return {
-                "success": True,
-                "text": text.strip(),
-                "pages": page_count,
-                "characters": len(text.strip()),
-                "filename": file.filename,
-                "note": "PDF already contained searchable text (no OCR needed)"
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
-    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
     
     finally:
-        for temp_file in [input_path, output_path]:
-            if temp_file.exists():
-                try:
-                    temp_file.unlink()
-                except:
-                    pass
+        if input_path.exists():
+            try:
+                input_path.unlink()
+            except:
+                pass
 
-@app.post("/ocr-high-quality")
-async def ocr_high_quality(
-    file: UploadFile = File(...),
+@app.post("/extract-text-simple")
+async def extract_text_simple(
+    file: UploadFile = File(...), 
     language: str = Query(default="eng", description="OCR language")
 ):
     """
-    Aggressive OCR for very poor quality scans.
-    Uses all preprocessing: clean, deskew, oversample to 300 DPI.
+    Simple text extraction with minimal processing - best for clean scans
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
     file_id = str(uuid.uuid4())
     input_path = TEMP_DIR / f"{file_id}_input.pdf"
-    output_path = TEMP_DIR / f"{file_id}_output.pdf"
     
     try:
         with open(input_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
         
-        # Aggressive quality settings for poor scans
-        ocrmypdf.ocr(
-            input_path,
-            output_path,
-            language=language,
-            deskew=True,
-            clean=True,
-            image_dpi=300,
-            oversample=300,  # Upsample low-res images
-            rotate_pages=True,
-            rotate_pages_threshold=10.0,  # More aggressive rotation
-            remove_background=False,  # Usually not needed if clean is used
-            force_ocr=True,
-            # Performance optimizations
-            output_type="pdf",
-            optimize=0,
-            fast_web_view=999999
-        )
+        # Convert PDF to images at 300 DPI
+        images = convert_from_path(input_path, dpi=300)
         
-        return FileResponse(
-            path=str(output_path),
-            media_type="application/pdf",
-            filename=f"high_quality_{file.filename}"
-        )
+        all_text = ""
+        
+        for page_num, image in enumerate(images, start=1):
+            # Use PSM 6 (single uniform block) - usually best for documents
+            page_text = pytesseract.image_to_string(
+                image,
+                lang=language,
+                config='--psm 6 --oem 3'
+            )
+            
+            if page_text.strip():
+                all_text += f"\n{'='*50}\n"
+                all_text += f"PAGE {page_num}\n"
+                all_text += f"{'='*50}\n"
+                all_text += page_text + "\n"
+        
+        return {
+            "success": True,
+            "text": all_text.strip(),
+            "pages": len(images),
+            "characters": len(all_text.strip()),
+            "filename": file.filename
+        }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"High quality OCR failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
     
     finally:
         if input_path.exists():

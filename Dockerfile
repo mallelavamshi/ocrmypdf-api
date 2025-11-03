@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies for OCRmyPDF
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ghostscript \
     tesseract-ocr \
@@ -8,20 +8,18 @@ RUN apt-get update && apt-get install -y \
     libleptonica-dev \
     libtesseract-dev \
     qpdf \
-    unpaper \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /code
 
-# Copy requirements and install Python dependencies
+# Install Python dependencies
 COPY requirements.txt /code/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
-# Copy application code
+# Copy application
 COPY ./app /code/app
 
-# Expose port
 EXPOSE 8001
 
-# Run the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
